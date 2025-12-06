@@ -18,14 +18,54 @@ pub enum ControllerEvent {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataMode {
+    SignalOnly,
+    MemsOnly,
+    SignalAndMems,
+}
+
+impl DataMode {
+    pub const ALL: [Self; 3] = [
+        DataMode::SignalOnly,
+        DataMode::MemsOnly,
+        DataMode::SignalAndMems,
+    ];
+
+    pub fn has_signal(self) -> bool {
+        matches!(self, DataMode::SignalOnly | DataMode::SignalAndMems)
+    }
+
+    pub fn has_mems(self) -> bool {
+        matches!(self, DataMode::MemsOnly | DataMode::SignalAndMems)
+    }
+}
+
+impl Default for DataMode {
+    fn default() -> Self {
+        DataMode::SignalAndMems
+    }
+}
+
+impl std::fmt::Display for DataMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DataMode::SignalOnly => write!(f, "Только сигнал"),
+            DataMode::MemsOnly => write!(f, "Только MEMS"),
+            DataMode::SignalAndMems => write!(f, "Сигнал + MEMS"),
+        }
+    }
+}
+
 pub struct Controller {
     runtime: Runtime,
     events_tx: UnboundedSender<ControllerEvent>,
     started: bool,
+    mode: DataMode,
 }
 
 impl Controller {
-    pub fn new() -> (Self, UnboundedReceiver<ControllerEvent>) {
+    pub fn new(mode: DataMode) -> (Self, UnboundedReceiver<ControllerEvent>) {
         let runtime = Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -38,6 +78,7 @@ impl Controller {
                 runtime,
                 events_tx,
                 started: false,
+                mode,
             },
             events_rx,
         )
@@ -51,9 +92,10 @@ impl Controller {
         self.started = true;
         let events = self.events_tx.clone();
         let handle = self.runtime.handle().clone();
+        let mode = self.mode;
 
         thread::spawn(
-            move || match handle.block_on(run_callibri(events.clone())) {
+            move || match handle.block_on(run_callibri(events.clone(), mode)) {
                 Ok(_) => {
                     let _ = events.send(ControllerEvent::Finished);
                 }
@@ -65,7 +107,10 @@ impl Controller {
     }
 }
 
-async fn run_callibri(events: UnboundedSender<ControllerEvent>) -> Result<(), String> {
+async fn run_callibri(
+    events: UnboundedSender<ControllerEvent>,
+    mode: DataMode,
+) -> Result<(), String> {
     log(&events, "Запускаем сканер...");
 
     let filter: [SensorFamily; 1] = [SensorFamily_SensorLECallibri];
@@ -108,69 +153,79 @@ async fn run_callibri(events: UnboundedSender<ControllerEvent>) -> Result<(), St
     log(&events, "Настраиваем частоту дискретизации 500 Гц...");
     session.configure_sampling_frequency(SensorSamplingFrequency_FrequencyHz500)?;
 
-    log(&events, "Запускаем поток сигнала...");
-    session.start_signal_stream().await?;
+    if mode.has_signal() {
+        log(&events, "Запускаем поток сигнала...");
+        session.start_signal_stream().await?;
 
-    log(&events, "Получаем данные 5 секунд...");
-    sleep(Duration::from_secs(5)).await;
+        log(&events, "Получаем данные 5 секунд...");
+        sleep(Duration::from_secs(5)).await;
 
-    if session.is_signal_running() {
-        log(&events, "Останавливаем поток сигнала...");
-        if let Err(err) = session.stop_signal_stream().await {
-            log(&events, format!("Ошибка остановки сигнала: {err}"));
+        if session.is_signal_running() {
+            log(&events, "Останавливаем поток сигнала...");
+            if let Err(err) = session.stop_signal_stream().await {
+                log(&events, format!("Ошибка остановки сигнала: {err}"));
+            }
         }
+        session.unsubscribe_signal();
+    } else {
+        log(&events, "Режим передачи сигнала отключён пользователем.");
     }
 
-    session.unsubscribe_signal();
-
-    if session.supports_mems() {
-        log(
-            &events,
-            "Устройство поддерживает MEMS. Проверяем состояние калибровки...",
-        );
-        match session.read_mems_calibration_state() {
-            Ok(true) => log(&events, "MEMS уже откалиброван."),
-            Ok(false) => {
-                log(&events, "MEMS не откалиброван. Запускаем калибровку...");
-                if let Err(err) = session.calibrate_mems().await {
-                    log(&events, format!("Ошибка калибровки MEMS: {err}"));
-                } else {
-                    log(&events, "Команда калибровки MEMS отправлена.");
-                }
-            }
-            Err(err) => log(
-                &events,
-                format!("Не удалось получить состояние MEMS: {err}"),
-            ),
-        }
-
-        if let Err(err) = session.subscribe_mems() {
-            log(&events, format!("Не удалось подписаться на MEMS: {err}"));
-        }
-        if let Err(err) = session.subscribe_quaternion() {
+    if mode.has_mems() {
+        if session.supports_mems() {
             log(
                 &events,
-                format!("Не удалось подписаться на кватернионы: {err}"),
+                "Устройство поддерживает MEMS. Проверяем состояние калибровки...",
             );
-        }
-
-        log(&events, "Запускаем поток MEMS на 5 секунд...");
-        match session.start_mems_stream().await {
-            Ok(_) => {
-                sleep(Duration::from_secs(5)).await;
-                if session.is_mems_running() {
-                    if let Err(err) = session.stop_mems_stream().await {
-                        log(&events, format!("Ошибка остановки MEMS: {err}"));
+            match session.read_mems_calibration_state() {
+                Ok(true) => log(&events, "MEMS уже откалиброван."),
+                Ok(false) => {
+                    log(&events, "MEMS не откалиброван. Запускаем калибровку...");
+                    if let Err(err) = session.calibrate_mems().await {
+                        log(&events, format!("Ошибка калибровки MEMS: {err}"));
+                    } else {
+                        log(&events, "Команда калибровки MEMS отправлена.");
                     }
                 }
+                Err(err) => log(
+                    &events,
+                    format!("Не удалось получить состояние MEMS: {err}"),
+                ),
             }
-            Err(err) => log(&events, format!("Не удалось запустить MEMS: {err}")),
-        }
 
-        session.unsubscribe_mems();
-        session.unsubscribe_quaternion();
+            if let Err(err) = session.subscribe_mems() {
+                log(&events, format!("Не удалось подписаться на MEMS: {err}"));
+            }
+            if let Err(err) = session.subscribe_quaternion() {
+                log(
+                    &events,
+                    format!("Не удалось подписаться на кватернионы: {err}"),
+                );
+            }
+
+            log(
+                &events,
+                "Запускаем поток MEMS и выводим данные в течение 15 секунд...",
+            );
+            match session.start_mems_stream().await {
+                Ok(_) => {
+                    sleep(Duration::from_secs(15)).await;
+                    if session.is_mems_running() {
+                        if let Err(err) = session.stop_mems_stream().await {
+                            log(&events, format!("Ошибка остановки MEMS: {err}"));
+                        }
+                    }
+                }
+                Err(err) => log(&events, format!("Не удалось запустить MEMS: {err}")),
+            }
+
+            session.unsubscribe_mems();
+            session.unsubscribe_quaternion();
+        } else {
+            log(&events, "MEMS не поддерживается данным устройством.");
+        }
     } else {
-        log(&events, "MEMS не поддерживается данным устройством.");
+        log(&events, "Режим MEMS отключён пользователем.");
     }
 
     if session.is_connected() {

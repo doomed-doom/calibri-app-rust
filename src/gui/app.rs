@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use iced::widget::{button, column, container, scrollable, text};
+use iced::widget::{button, column, container, pick_list, scrollable, text};
 use iced::{Element, Length, Subscription, Task};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::controller::{Controller, ControllerEvent};
+use super::controller::{Controller, ControllerEvent, DataMode};
 
 const LOG_LIMIT: usize = 200;
 
@@ -14,6 +14,7 @@ pub struct CallibriApp {
     events: Option<UnboundedReceiver<ControllerEvent>>,
     logs: Vec<String>,
     status: RunStatus,
+    mode: DataMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,7 @@ impl Default for RunStatus {
 pub enum Message {
     StartRequested,
     Tick,
+    ModeSelected(DataMode),
 }
 
 impl CallibriApp {
@@ -47,7 +49,7 @@ impl CallibriApp {
                 if !matches!(self.status, RunStatus::Running) {
                     self.logs.clear();
                     self.status = RunStatus::Running;
-                    let (mut controller, events) = Controller::new();
+                    let (mut controller, events) = Controller::new(self.mode);
                     controller.start();
                     self.controller = Some(controller);
                     self.events = Some(events);
@@ -83,6 +85,11 @@ impl CallibriApp {
                     self.events = None;
                 }
             }
+            Message::ModeSelected(mode) => {
+                if !matches!(self.status, RunStatus::Running) {
+                    self.mode = mode;
+                }
+            }
         }
 
         Task::none()
@@ -109,7 +116,10 @@ impl CallibriApp {
 
         let logs_view = scrollable(log_column).height(Length::Fill);
 
-        let layout = column![status_text, start_button, logs_view]
+        let mode_picker = pick_list(&DataMode::ALL[..], Some(self.mode), Message::ModeSelected)
+            .placeholder("Выберите режим передачи данных");
+
+        let layout = column![status_text, mode_picker, start_button, logs_view]
             .spacing(16)
             .width(Length::Fill)
             .height(Length::Fill);
