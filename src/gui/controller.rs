@@ -1,7 +1,5 @@
 use crate::core::bindings::{
-    SensorFamily,
-    SensorFamily_SensorLECallibri,
-    SensorSamplingFrequency_FrequencyHz500,
+    SensorFamily, SensorFamily_SensorLECallibri, SensorSamplingFrequency_FrequencyHz500,
 };
 use crate::core::callibri::CallibriSensor;
 use crate::core::scanner::SampleScanner;
@@ -11,8 +9,8 @@ use crate::core::sensor_info::{
 use std::os::raw::c_void;
 use std::thread;
 use tokio::runtime::{Builder, Runtime};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::time::{sleep, Duration};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::time::{Duration, sleep};
 
 pub enum ControllerEvent {
     Log(String),
@@ -54,16 +52,16 @@ impl Controller {
         let events = self.events_tx.clone();
         let handle = self.runtime.handle().clone();
 
-        thread::spawn(move || {
-            match handle.block_on(run_callibri(events.clone())) {
+        thread::spawn(
+            move || match handle.block_on(run_callibri(events.clone())) {
                 Ok(_) => {
                     let _ = events.send(ControllerEvent::Finished);
                 }
                 Err(err) => {
                     let _ = events.send(ControllerEvent::Failed(err));
                 }
-            }
-        });
+            },
+        );
     }
 }
 
@@ -108,8 +106,7 @@ async fn run_callibri(events: UnboundedSender<ControllerEvent>) -> Result<(), St
     }
 
     log(&events, "Настраиваем частоту дискретизации 500 Гц...");
-    session
-        .configure_sampling_frequency(SensorSamplingFrequency_FrequencyHz500)?;
+    session.configure_sampling_frequency(SensorSamplingFrequency_FrequencyHz500)?;
 
     log(&events, "Запускаем поток сигнала...");
     session.start_signal_stream().await?;
@@ -125,6 +122,56 @@ async fn run_callibri(events: UnboundedSender<ControllerEvent>) -> Result<(), St
     }
 
     session.unsubscribe_signal();
+
+    if session.supports_mems() {
+        log(
+            &events,
+            "Устройство поддерживает MEMS. Проверяем состояние калибровки...",
+        );
+        match session.read_mems_calibration_state() {
+            Ok(true) => log(&events, "MEMS уже откалиброван."),
+            Ok(false) => {
+                log(&events, "MEMS не откалиброван. Запускаем калибровку...");
+                if let Err(err) = session.calibrate_mems().await {
+                    log(&events, format!("Ошибка калибровки MEMS: {err}"));
+                } else {
+                    log(&events, "Команда калибровки MEMS отправлена.");
+                }
+            }
+            Err(err) => log(
+                &events,
+                format!("Не удалось получить состояние MEMS: {err}"),
+            ),
+        }
+
+        if let Err(err) = session.subscribe_mems() {
+            log(&events, format!("Не удалось подписаться на MEMS: {err}"));
+        }
+        if let Err(err) = session.subscribe_quaternion() {
+            log(
+                &events,
+                format!("Не удалось подписаться на кватернионы: {err}"),
+            );
+        }
+
+        log(&events, "Запускаем поток MEMS на 5 секунд...");
+        match session.start_mems_stream().await {
+            Ok(_) => {
+                sleep(Duration::from_secs(5)).await;
+                if session.is_mems_running() {
+                    if let Err(err) = session.stop_mems_stream().await {
+                        log(&events, format!("Ошибка остановки MEMS: {err}"));
+                    }
+                }
+            }
+            Err(err) => log(&events, format!("Не удалось запустить MEMS: {err}")),
+        }
+
+        session.unsubscribe_mems();
+        session.unsubscribe_quaternion();
+    } else {
+        log(&events, "MEMS не поддерживается данным устройством.");
+    }
 
     if session.is_connected() {
         log(&events, "Отключаем сенсор...");

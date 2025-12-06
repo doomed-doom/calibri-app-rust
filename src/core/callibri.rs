@@ -1,11 +1,16 @@
 use crate::core::bindings::*;
+use crate::core::commands::exec_sensor_command;
+use crate::core::mems::{CallibriMEMSListener, CallibriQuaternionListener};
 use crate::core::signal::CallibriSignalListener;
 use crate::core::utils::{empty_status, status_message};
 
 pub struct CallibriSensor {
     sensor: *mut Sensor,
     signal_listener: CallibriSignalListener,
+    mems_listener: CallibriMEMSListener,
+    quaternion_listener: CallibriQuaternionListener,
     signal_running: bool,
+    mems_running: bool,
     connected: bool,
 }
 
@@ -14,7 +19,10 @@ impl CallibriSensor {
         Self {
             sensor,
             signal_listener: CallibriSignalListener::default(),
+            mems_listener: CallibriMEMSListener::default(),
+            quaternion_listener: CallibriQuaternionListener::default(),
             signal_running: false,
+            mems_running: false,
             connected: false,
         }
     }
@@ -29,6 +37,10 @@ impl CallibriSensor {
 
     pub fn is_signal_running(&self) -> bool {
         self.signal_running
+    }
+
+    pub fn is_mems_running(&self) -> bool {
+        self.mems_running
     }
 
     pub fn connect(&mut self) -> Result<(), String> {
@@ -119,6 +131,71 @@ impl CallibriSensor {
     pub fn unsubscribe_signal(&mut self) {
         self.signal_listener.unsubscribe();
     }
+
+    pub fn supports_mems(&self) -> bool {
+        if self.sensor.is_null() {
+            return false;
+        }
+
+        unsafe { isSupportedFeatureSensor(self.sensor, SensorFeature_FeatureMEMS) != 0 }
+    }
+
+    pub fn subscribe_mems(&mut self) -> Result<(), String> {
+        self.mems_listener.subscribe(self.sensor)
+    }
+
+    pub fn subscribe_quaternion(&mut self) -> Result<(), String> {
+        self.quaternion_listener.subscribe(self.sensor)
+    }
+
+    pub fn unsubscribe_mems(&mut self) {
+        self.mems_listener.unsubscribe();
+    }
+
+    pub fn unsubscribe_quaternion(&mut self) {
+        self.quaternion_listener.unsubscribe();
+    }
+
+    pub fn read_mems_calibration_state(&self) -> Result<bool, String> {
+        unsafe {
+            let mut state: u8 = 0;
+            let mut status = empty_status();
+            let ok = readMEMSCalibrateStateCallibri(self.sensor, &mut state, &mut status) != 0;
+            if ok && status.Success != 0 {
+                Ok(state != 0)
+            } else {
+                Err(format!(
+                    "Не удалось получить состояние калибровки MEMS: {}",
+                    status_message(&status)
+                ))
+            }
+        }
+    }
+
+    pub async fn calibrate_mems(&self) -> Result<(), String> {
+        exec_sensor_command(self.sensor, SensorCommand_CommandCalibrateMEMS).await
+    }
+
+    pub async fn start_mems_stream(&mut self) -> Result<(), String> {
+        if self.mems_running {
+            return Ok(());
+        }
+
+        self.mems_listener.subscribe(self.sensor)?;
+        self.mems_listener.start(self.sensor).await?;
+        self.mems_running = true;
+        Ok(())
+    }
+
+    pub async fn stop_mems_stream(&mut self) -> Result<(), String> {
+        if !self.mems_running {
+            return Ok(());
+        }
+
+        self.mems_listener.stop(self.sensor).await?;
+        self.mems_running = false;
+        Ok(())
+    }
 }
 
 impl Drop for CallibriSensor {
@@ -129,6 +206,14 @@ impl Drop for CallibriSensor {
             );
         }
         self.signal_listener.unsubscribe();
+
+        if self.mems_running {
+            eprintln!(
+                "Предупреждение: поток MEMS всё ещё активен при завершении. Попробуйте остановить его явно."
+            );
+        }
+        self.mems_listener.unsubscribe();
+        self.quaternion_listener.unsubscribe();
 
         if self.connected {
             if let Err(err) = self.disconnect() {
