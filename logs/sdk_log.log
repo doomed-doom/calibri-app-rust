@@ -1,14 +1,14 @@
-[2025-12-06 09:41:02.714] [sdk_log] [info] removeAllKnowingDevices
-[2025-12-06 09:41:14.116] [sdk_log] [debug] execCommand: [StopSignal]
-[2025-12-06 09:41:14.147] [sdk_log] [debug] execCommand: [StopStimulation]
-[2025-12-06 09:41:14.147] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
-[2025-12-06 09:41:14.147] [sdk_log] [debug] execCommand: [StopEnvelope]
-[2025-12-06 09:41:14.207] [sdk_log] [debug] execCommand: [StopMEMS]
-[2025-12-06 09:41:14.266] [sdk_log] [debug] execCommand: [StopAngle]
-[2025-12-06 09:41:14.295] [sdk_log] [debug] execCommand: [StopSignal]
-[2025-12-06 09:41:14.327] [sdk_log] [debug] execCommand: [StopStimulation]
-[2025-12-06 09:41:14.327] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
-[2025-12-06 09:41:14.327] [sdk_log] [debug] execCommand: [StopEnvelope]
-[2025-12-06 09:41:14.359] [sdk_log] [debug] execCommand: [StopMEMS]
-[2025-12-06 09:41:14.391] [sdk_log] [debug] execCommand: [StopAngle]
-[2025-12-06 09:41:16.350] [sdk_log] [debug] processPacks() is finished its a work
+[2025-12-06 10:01:45.551] [sdk_log] [info] removeAllKnowingDevices
+[2025-12-06 10:01:56.763] [sdk_log] [debug] execCommand: [StopSignal]
+[2025-12-06 10:01:56.792] [sdk_log] [debug] execCommand: [StopStimulation]
+[2025-12-06 10:01:56.792] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
+[2025-12-06 10:01:56.792] [sdk_log] [debug] execCommand: [StopEnvelope]
+[2025-12-06 10:01:56.854] [sdk_log] [debug] execCommand: [StopMEMS]
+[2025-12-06 10:01:56.911] [sdk_log] [debug] execCommand: [StopAngle]
+[2025-12-06 10:01:56.942] [sdk_log] [debug] execCommand: [StopSignal]
+[2025-12-06 10:01:56.971] [sdk_log] [debug] execCommand: [StopStimulation]
+[2025-12-06 10:01:56.971] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
+[2025-12-06 10:01:56.971] [sdk_log] [debug] execCommand: [StopEnvelope]
+[2025-12-06 10:01:57.003] [sdk_log] [debug] execCommand: [StopMEMS]
+[2025-12-06 10:01:57.031] [sdk_log] [debug] execCommand: [StopAngle]
+[2025-12-06 10:01:59.353] [sdk_log] [debug] processPacks() is finished its a work

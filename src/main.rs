@@ -8,6 +8,10 @@ use std::slice::from_raw_parts;
 use tokio::task;
 
 struct SensorPtr(*mut Sensor);
+struct SampleScanner {
+    scanner: *mut SensorScanner,
+    listener_handle: SensorsListenerHandle,
+}
 
 unsafe impl Send for SensorPtr {}
 
@@ -72,121 +76,234 @@ pub async fn create_sensor_async(
     result.map(|sensor_ptr| sensor_ptr.0)
 }
 
+impl SampleScanner {
+    fn new(filters: &[SensorFamily]) -> Result<Self, String> {
+        if filters.is_empty() {
+            return Err("Не указан ни один фильтр сканера".into());
+        }
+
+        let mut status = empty_status();
+        let scanner = unsafe {
+            createScanner(
+                filters.as_ptr() as *mut SensorFamily,
+                filters.len() as i32,
+                &mut status,
+            )
+        };
+
+        if scanner.is_null() || status.Success == 0 {
+            Err(format!(
+                "Не удалось создать сканер: {}",
+                status_message(&status)
+            ))
+        } else {
+            Ok(Self {
+                scanner,
+                listener_handle: null_mut(),
+            })
+        }
+    }
+
+    fn add_sensors_callback(&mut self, user_data: *mut c_void) -> Result<(), String> {
+        if self.scanner.is_null() {
+            return Err("Сканер не инициализирован".into());
+        }
+
+        if !self.listener_handle.is_null() {
+            return Ok(());
+        }
+
+        let mut status = empty_status();
+        let result = unsafe {
+            addSensorsCallbackScanner(
+                self.scanner,
+                Some(sensors_callback),
+                &mut self.listener_handle,
+                user_data,
+                &mut status,
+            )
+        } != 0;
+
+        if result && status.Success != 0 {
+            Ok(())
+        } else {
+            self.listener_handle = null_mut();
+            Err(format!(
+                "Не удалось установить callback сканера: {}",
+                status_message(&status)
+            ))
+        }
+    }
+
+    fn remove_sensors_callback(&mut self) {
+        if !self.listener_handle.is_null() {
+            unsafe { removeSensorsCallbackScanner(self.listener_handle) };
+            self.listener_handle = null_mut();
+        }
+    }
+
+    fn start(&mut self, attempts: i32) -> Result<(), String> {
+        if self.scanner.is_null() {
+            return Err("Сканер не инициализирован".into());
+        }
+
+        let mut status = empty_status();
+        let result = unsafe { startScanner(self.scanner, &mut status, attempts) } != 0;
+
+        if result && status.Success != 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "Ошибка при старте сканера: {}",
+                status_message(&status)
+            ))
+        }
+    }
+
+    fn stop(&mut self) -> Result<(), String> {
+        if self.scanner.is_null() {
+            return Err("Сканер не инициализирован".into());
+        }
+
+        let mut status = empty_status();
+        let result = unsafe { stopScanner(self.scanner, &mut status) } != 0;
+
+        if result && status.Success != 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "Ошибка при остановке сканера: {}",
+                status_message(&status)
+            ))
+        }
+    }
+
+    fn fetch_devices(&mut self, mut capacity: i32) -> Result<Vec<SensorInfo>, String> {
+        if self.scanner.is_null() {
+            return Err("Сканер не инициализирован".into());
+        }
+
+        if capacity <= 0 {
+            capacity = 1;
+        }
+
+        let buffer_len = capacity as usize;
+        let mut sensors_vec: Vec<SensorInfo> = Vec::with_capacity(buffer_len);
+        let mut sz_sensors_in_out = capacity;
+        let mut status = empty_status();
+
+        unsafe {
+            sensors_vec.set_len(buffer_len);
+        }
+
+        let result = unsafe {
+            sensorsScanner(
+                self.scanner,
+                sensors_vec.as_mut_ptr(),
+                &mut sz_sensors_in_out,
+                &mut status,
+            )
+        } != 0;
+
+        if !result || status.Success == 0 {
+            unsafe {
+                sensors_vec.set_len(0);
+            }
+            return Err(format!(
+                "Не удалось получить список сенсоров: {}",
+                status_message(&status)
+            ));
+        }
+
+        let sensors_found = sz_sensors_in_out.clamp(0, buffer_len as i32) as usize;
+        unsafe {
+            sensors_vec.set_len(sensors_found);
+        }
+
+        if sensors_vec.is_empty() {
+            Err("Сканер не вернул ни одного устройства".into())
+        } else {
+            Ok(sensors_vec)
+        }
+    }
+
+    async fn create_sensor(&self, sensor_info: SensorInfo) -> Result<*mut Sensor, String> {
+        if self.scanner.is_null() {
+            return Err("Сканер не инициализирован".into());
+        }
+
+        create_sensor_async(self.scanner, sensor_info)
+            .await
+            .map_err(|status| status_message(&status))
+    }
+}
+
+impl Drop for SampleScanner {
+    fn drop(&mut self) {
+        self.remove_sensors_callback();
+
+        unsafe {
+            if !self.scanner.is_null() {
+                freeScanner(self.scanner);
+                self.scanner = null_mut();
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let filter: [SensorFamily; 1] = [SensorFamily_SensorLECallibri];
 
-    let mut st = empty_status();
-    let scanner = unsafe {
-        createScanner(
-            filter.as_ptr() as *mut SensorFamily,
-            filter.len() as i32,
-            &mut st,
-        )
+    let mut scanner = match SampleScanner::new(&filter) {
+        Ok(scanner) => scanner,
+        Err(err) => {
+            eprintln!("{err}");
+            return;
+        }
     };
 
-    if scanner.is_null() || st.Success == 0 {
-        eprintln!("Не удалось создать сканер: {}", status_message(&st));
-        return;
-    }
-
-    let mut l_handle: SensorsListenerHandle = null_mut();
-    let mut device_founded: bool = false;
+    let mut device_founded = false;
     let user_data: *mut c_void = &mut device_founded as *mut _ as *mut c_void;
 
-    st = empty_status();
-    unsafe {
-        addSensorsCallbackScanner(
-            scanner,
-            Some(sensors_callback),
-            &mut l_handle,
-            user_data,
-            &mut st,
-        );
-    }
-
-    if st.Success == 0 {
-        eprintln!(
-            "Не удалось установить callback сканера: {}",
-            status_message(&st)
-        );
+    if let Err(err) = scanner.add_sensors_callback(user_data) {
+        eprintln!("{err}");
     }
 
     if !device_founded {
         println!("Поиск устройства");
-        st = empty_status();
-        unsafe {
-            startScanner(scanner, &mut st, 10);
-        }
-
-        if st.Success == 0 {
-            eprintln!("Ошибка при старте сканера: {}", status_message(&st));
+        if let Err(err) = scanner.start(10) {
+            eprintln!("{err}");
+            return;
         }
     }
 
-    let mut sz_sensors_in_out: i32 = 32;
-    let buffer_len = sz_sensors_in_out as usize;
-    let mut sensors_vec: Vec<SensorInfo> = Vec::with_capacity(buffer_len);
-
-    st = empty_status();
-    let sensors_found = unsafe {
-        sensors_vec.set_len(buffer_len);
-
-        if sensorsScanner(
-            scanner,
-            sensors_vec.as_mut_ptr(),
-            &mut sz_sensors_in_out,
-            &mut st,
-        ) == 0
-        {
-            sensors_vec.set_len(0);
-            0usize
-        } else {
-            let count = sz_sensors_in_out.clamp(0, buffer_len as i32) as usize;
-            sensors_vec.set_len(count);
-            count
+    let sensors = match scanner.fetch_devices(32) {
+        Ok(list) => list,
+        Err(err) => {
+            eprintln!("{err}");
+            return;
         }
     };
 
-    if st.Success == 0 || sensors_found == 0 {
-        eprintln!(
-            "Не удалось получить список сенсоров: {}",
-            status_message(&st)
-        );
+    println!("Найдено {} сенсоров", sensors.len());
+    let sensor_info = sensors[0];
 
-        if !l_handle.is_null() {
-            unsafe { removeSensorsCallbackScanner(l_handle) };
-        }
-
-        unsafe {
-            stopScanner(scanner, &mut st);
-            freeScanner(scanner);
-        }
-        return;
-    }
-
-    println!("Найдено {} сенсоров", sensors_found);
-    let sensor_info = sensors_vec[0];
-
-    match create_sensor_async(scanner, sensor_info).await {
+    match scanner.create_sensor(sensor_info).await {
         Ok(sensor_ptr) => {
             println!("Sensor created: {:?}", sensor_ptr);
             unsafe {
                 freeSensor(sensor_ptr);
             }
         }
-        Err(status) => {
-            eprintln!("Не удалось создать сенсор: {}", status_message(&status));
+        Err(err) => {
+            eprintln!("{err}");
         }
     }
 
-    if !l_handle.is_null() {
-        unsafe { removeSensorsCallbackScanner(l_handle) };
+    if let Err(err) = scanner.stop() {
+        eprintln!("{err}");
     }
 
-    st = empty_status();
-    unsafe {
-        stopScanner(scanner, &mut st);
-        freeScanner(scanner);
-    }
+    scanner.remove_sensors_callback();
 }
