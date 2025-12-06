@@ -1,5 +1,12 @@
 use crate::bindings::*;
 use crate::utils::{empty_status, status_message};
+use std::ffi::CStr;
+use std::os::raw::c_char;
+
+const DEFAULT_HW_FILTER_CAPACITY: usize = 16;
+const SENSOR_NAME_CAP: usize = SENSOR_NAME_LEN as usize;
+const SENSOR_ADDRESS_CAP: usize = SENSOR_ADR_LEN as usize;
+const SENSOR_SERIAL_CAP: usize = SENSOR_SN_LEN as usize;
 
 const FEATURE_NAMES: &[(SensorFeature, &str)] = &[
     (SensorFeature_FeatureSignal, "Электроды (Signal)"),
@@ -292,6 +299,9 @@ pub fn describe_sensor_parameters(sensor_ptr: *mut Sensor) -> Result<(), String>
                 param.Param,
                 sensor_param_access_name(param.ParamAccess)
             );
+            if let Err(err) = print_parameter_value(sensor_ptr, param.Param) {
+                eprintln!("    {}", err);
+            }
         }
     }
 
@@ -430,4 +440,211 @@ fn sensor_param_access_name(access: SensorParamAccess) -> &'static str {
         .find(|(code, _)| *code == access)
         .map(|(_, name)| *name)
         .unwrap_or("неизвестный доступ")
+}
+
+#[allow(non_upper_case_globals)]
+fn print_parameter_value(
+    sensor_ptr: *mut Sensor,
+    parameter: SensorParameter,
+) -> Result<(), String> {
+    match parameter {
+        SensorParameter_ParameterName => {
+            let name = read_sensor_string(sensor_ptr, SENSOR_NAME_CAP, readNameSensor)?;
+            println!("    Имя устройства: {name}");
+        }
+        SensorParameter_ParameterState => {
+            let state = read_sensor_state(sensor_ptr)?;
+            println!("    Состояние: {}", sensor_state_name(state));
+        }
+        SensorParameter_ParameterAddress => {
+            let addr = read_sensor_string(sensor_ptr, SENSOR_ADDRESS_CAP, readAddressSensor)?;
+            println!("    Адрес: {addr}");
+        }
+        SensorParameter_ParameterSerialNumber => {
+            let serial = read_sensor_string(sensor_ptr, SENSOR_SERIAL_CAP, readSerialNumberSensor)?;
+            println!("    Серийный номер: {serial}");
+        }
+        SensorParameter_ParameterFirmwareMode => {
+            let mode = read_firmware_mode(sensor_ptr)?;
+            println!("    Режим прошивки: {}", firmware_mode_name(mode));
+        }
+        SensorParameter_ParameterHardwareFilterState => {
+            let filters = read_hardware_filters(sensor_ptr)?;
+            if filters.is_empty() {
+                println!("    Аппаратные фильтры: отключены");
+            } else {
+                println!("    Аппаратные фильтры:");
+                for f in filters {
+                    println!("      • {}", sensor_filter_name(f));
+                }
+            }
+        }
+        SensorParameter_ParameterSamplingFrequency => {
+            let freq = read_sampling_frequency(sensor_ptr)?;
+            println!(
+                "    Частота дискретизации: {}",
+                sampling_frequency_name(freq)
+            );
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn read_sensor_string(
+    sensor_ptr: *mut Sensor,
+    capacity: usize,
+    reader: unsafe extern "C" fn(*mut Sensor, *mut c_char, i32, *mut OpStatus) -> u8,
+) -> Result<String, String> {
+    unsafe {
+        let mut buffer = vec![0i8; capacity];
+        let mut status = empty_status();
+        let ok = reader(
+            sensor_ptr,
+            buffer.as_mut_ptr(),
+            capacity as i32,
+            &mut status,
+        ) != 0;
+
+        if !ok || status.Success == 0 {
+            return Err(format!(
+                "Не удалось прочитать строковый параметр: {}",
+                status_message(&status)
+            ));
+        }
+
+        Ok(CStr::from_ptr(buffer.as_ptr())
+            .to_string_lossy()
+            .into_owned())
+    }
+}
+
+fn read_sensor_state(sensor_ptr: *mut Sensor) -> Result<SensorState, String> {
+    unsafe {
+        let mut state = SensorState_StateOutOfRange;
+        let mut status = empty_status();
+        let ok = readStateSensor(sensor_ptr, &mut state, &mut status) != 0;
+        if ok && status.Success != 0 {
+            Ok(state)
+        } else {
+            Err(format!(
+                "Не удалось прочитать состояние сенсора: {}",
+                status_message(&status)
+            ))
+        }
+    }
+}
+
+fn read_firmware_mode(sensor_ptr: *mut Sensor) -> Result<SensorFirmwareMode, String> {
+    unsafe {
+        let mut mode = SensorFirmwareMode_ModeApplication;
+        let mut status = empty_status();
+        let ok = readFirmwareModeSensor(sensor_ptr, &mut mode, &mut status) != 0;
+        if ok && status.Success != 0 {
+            Ok(mode)
+        } else {
+            Err(format!(
+                "Не удалось прочитать режим прошивки: {}",
+                status_message(&status)
+            ))
+        }
+    }
+}
+
+fn read_hardware_filters(sensor_ptr: *mut Sensor) -> Result<Vec<SensorFilter>, String> {
+    unsafe {
+        let mut count = DEFAULT_HW_FILTER_CAPACITY as i32;
+        let mut filters: Vec<SensorFilter> =
+            vec![SensorFilter_FilterUnknown; DEFAULT_HW_FILTER_CAPACITY];
+
+        let mut status = empty_status();
+        let ok =
+            readHardwareFiltersSensor(sensor_ptr, filters.as_mut_ptr(), &mut count, &mut status)
+                != 0;
+
+        if !ok || status.Success == 0 {
+            return Err(format!(
+                "Не удалось прочитать аппаратные фильтры: {}",
+                status_message(&status)
+            ));
+        }
+
+        let len = count.clamp(0, filters.len() as i32) as usize;
+        filters.truncate(len);
+        filters.retain(|f| *f != SensorFilter_FilterUnknown);
+        Ok(filters)
+    }
+}
+
+fn read_sampling_frequency(sensor_ptr: *mut Sensor) -> Result<SensorSamplingFrequency, String> {
+    unsafe {
+        let mut freq = SensorSamplingFrequency_FrequencyHz125;
+        let mut status = empty_status();
+        let ok = readSamplingFrequencySensor(sensor_ptr, &mut freq, &mut status) != 0;
+        if ok && status.Success != 0 {
+            Ok(freq)
+        } else {
+            Err(format!(
+                "Не удалось прочитать частоту дискретизации: {}",
+                status_message(&status)
+            ))
+        }
+    }
+}
+
+#[allow(non_upper_case_globals)]
+fn sensor_state_name(state: SensorState) -> &'static str {
+    match state {
+        SensorState_StateInRange => "InRange (устройство подключено)",
+        SensorState_StateOutOfRange => "OutOfRange (устройство выключено или вне зоны)",
+        _ => "Неизвестное состояние",
+    }
+}
+
+#[allow(non_upper_case_globals)]
+fn firmware_mode_name(mode: SensorFirmwareMode) -> &'static str {
+    match mode {
+        SensorFirmwareMode_ModeBootloader => "Bootloader",
+        SensorFirmwareMode_ModeApplication => "Application",
+        _ => "Неизвестный режим",
+    }
+}
+
+#[allow(non_upper_case_globals)]
+fn sensor_filter_name(filter: SensorFilter) -> &'static str {
+    match filter {
+        SensorFilter_FilterHPFBwhLvl1CutoffFreq1Hz => "HPF 1 Гц",
+        SensorFilter_FilterHPFBwhLvl1CutoffFreq5Hz => "HPF 5 Гц",
+        SensorFilter_FilterBSFBwhLvl2CutoffFreq45_55Hz => "Notch 50 Гц",
+        SensorFilter_FilterBSFBwhLvl2CutoffFreq55_65Hz => "Notch 60 Гц",
+        SensorFilter_FilterHPFBwhLvl2CutoffFreq10Hz => "HPF 10 Гц",
+        SensorFilter_FilterLPFBwhLvl2CutoffFreq400Hz => "LPF 400 Гц",
+        SensorFilter_FilterHPFBwhLvl2CutoffFreq80Hz => "HPF 80 Гц",
+        _ => "Неизвестный фильтр",
+    }
+}
+
+#[allow(non_upper_case_globals)]
+fn sampling_frequency_name(freq: SensorSamplingFrequency) -> &'static str {
+    match freq {
+        SensorSamplingFrequency_FrequencyHz125 => "125 Гц",
+        SensorSamplingFrequency_FrequencyHz250 => "250 Гц",
+        SensorSamplingFrequency_FrequencyHz500 => "500 Гц",
+        SensorSamplingFrequency_FrequencyHz1000 => "1000 Гц",
+        SensorSamplingFrequency_FrequencyHz2000 => "2000 Гц",
+        SensorSamplingFrequency_FrequencyHz20 => "20 Гц",
+        SensorSamplingFrequency_FrequencyHz100 => "100 Гц",
+        SensorSamplingFrequency_FrequencyHz10 => "10 Гц",
+        SensorSamplingFrequency_FrequencyHz4000 => "4000 Гц",
+        SensorSamplingFrequency_FrequencyHz8000 => "8000 Гц",
+        SensorSamplingFrequency_FrequencyHz10000 => "10000 Гц",
+        SensorSamplingFrequency_FrequencyHz12000 => "12000 Гц",
+        SensorSamplingFrequency_FrequencyHz16000 => "16000 Гц",
+        SensorSamplingFrequency_FrequencyHz24000 => "24000 Гц",
+        SensorSamplingFrequency_FrequencyHz32000 => "32000 Гц",
+        SensorSamplingFrequency_FrequencyHz48000 => "48000 Гц",
+        SensorSamplingFrequency_FrequencyHz64000 => "64000 Гц",
+        _ => "Неизвестная частота",
+    }
 }

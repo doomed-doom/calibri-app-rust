@@ -1,8 +1,10 @@
-[2025-12-06 10:42:18.973] [sdk_log] [info] removeAllKnowingDevices
-[2025-12-06 10:42:30.172] [sdk_log] [debug] execCommand: [StopSignal]
-[2025-12-06 10:42:30.202] [sdk_log] [debug] execCommand: [StopStimulation]
-[2025-12-06 10:42:30.203] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
-[2025-12-06 10:42:30.203] [sdk_log] [debug] execCommand: [StopEnvelope]
-[2025-12-06 10:42:30.262] [sdk_log] [debug] execCommand: [StopMEMS]
-[2025-12-06 10:42:30.319] [sdk_log] [debug] execCommand: [StopAngle]
-[2025-12-06 10:42:32.359] [sdk_log] [debug] processPacks() is finished its a work
+[2025-12-06 13:04:54.891] [sdk_log] [info] removeAllKnowingDevices
+[2025-12-06 13:05:06.538] [sdk_log] [debug] execCommand: [StartSignal]
+[2025-12-06 13:06:11.545] [sdk_log] [debug] execCommand: [StopSignal]
+[2025-12-06 13:06:11.576] [sdk_log] [debug] execCommand: [StopSignal]
+[2025-12-06 13:06:11.604] [sdk_log] [debug] execCommand: [StopStimulation]
+[2025-12-06 13:06:11.604] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
+[2025-12-06 13:06:11.604] [sdk_log] [debug] execCommand: [StopEnvelope]
+[2025-12-06 13:06:11.636] [sdk_log] [debug] execCommand: [StopMEMS]
+[2025-12-06 13:06:11.664] [sdk_log] [debug] execCommand: [StopAngle]
+[2025-12-06 13:06:16.062] [sdk_log] [debug] processPacks() is finished its a work
