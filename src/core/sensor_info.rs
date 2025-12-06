@@ -1,5 +1,5 @@
-use crate::bindings::*;
-use crate::utils::{empty_status, status_message};
+use crate::core::bindings::*;
+use crate::core::utils::{empty_status, status_message};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 

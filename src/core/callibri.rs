@@ -1,6 +1,6 @@
-use crate::bindings::*;
-use crate::signal::CallibriSignalListener;
-use crate::utils::{empty_status, status_message};
+use crate::core::bindings::*;
+use crate::core::signal::CallibriSignalListener;
+use crate::core::utils::{empty_status, status_message};
 
 pub struct CallibriSensor {
     sensor: *mut Sensor,

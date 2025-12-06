@@ -4,7 +4,7 @@ fn main() {
     println!("cargo:rustc-link-lib=neurosdk2");
     println!("cargo:rustc-link-search=native=/usr/lib");
 
-    let out_path = "src/bindings.rs";
+    let out_path = "src/core/bindings.rs";
     let allows: String = String::from(
         "#![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code, unused)]\n",
     );
