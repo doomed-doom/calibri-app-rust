@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::core::bindings::*;
 use crate::core::commands::exec_sensor_command;
 use crate::core::utils::{empty_status, status_message};

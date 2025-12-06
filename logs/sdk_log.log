@@ -1,11 +1,1 @@
-[2025-12-06 15:30:38.505] [sdk_log] [info] removeAllKnowingDevices
-[2025-12-06 15:30:49.877] [sdk_log] [debug] execCommand: [CalibrateMEMS]
-[2025-12-06 15:30:49.937] [sdk_log] [debug] execCommand: [StartMEMS]
-[2025-12-06 15:31:04.999] [sdk_log] [debug] execCommand: [StopMEMS]
-[2025-12-06 15:31:05.040] [sdk_log] [debug] execCommand: [StopSignal]
-[2025-12-06 15:31:05.072] [sdk_log] [debug] execCommand: [StopStimulation]
-[2025-12-06 15:31:05.072] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
-[2025-12-06 15:31:05.072] [sdk_log] [debug] execCommand: [StopEnvelope]
-[2025-12-06 15:31:05.104] [sdk_log] [debug] execCommand: [StopMEMS]
-[2025-12-06 15:31:05.136] [sdk_log] [debug] execCommand: [StopAngle]
-[2025-12-06 15:31:07.016] [sdk_log] [debug] processPacks() is finished its a work
+[2025-12-06 18:45:05.621] [sdk_log] [info] removeAllKnowingDevices

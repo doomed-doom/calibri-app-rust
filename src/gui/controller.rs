@@ -1,84 +1,63 @@
-use crate::core::bindings::{
-    SensorFamily, SensorFamily_SensorLECallibri, SensorSamplingFrequency_FrequencyHz500,
-};
+use crate::core::bindings::{SensorFamily, SensorFamily_SensorLECallibri, SensorInfo};
 use crate::core::callibri::CallibriSensor;
 use crate::core::scanner::SampleScanner;
 use crate::core::sensor_info::{
     describe_sensor_commands, describe_sensor_features, describe_sensor_parameters,
 };
+use std::ffi::CStr;
 use std::os::raw::c_void;
 use std::thread;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::time::{Duration, sleep};
 
 pub enum ControllerEvent {
     Log(String),
+    Devices(Vec<DeviceEntry>),
+    Connected(String),
     Finished,
     Failed(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataMode {
-    SignalOnly,
-    MemsOnly,
-    SignalAndMems,
+#[derive(Debug, Clone, Copy)]
+pub enum ControllerCommand {
+    Rescan,
+    Connect { sensor: SensorInfo },
+    Shutdown,
 }
 
-impl DataMode {
-    pub const ALL: [Self; 3] = [
-        DataMode::SignalOnly,
-        DataMode::MemsOnly,
-        DataMode::SignalAndMems,
-    ];
-
-    pub fn has_signal(self) -> bool {
-        matches!(self, DataMode::SignalOnly | DataMode::SignalAndMems)
-    }
-
-    pub fn has_mems(self) -> bool {
-        matches!(self, DataMode::MemsOnly | DataMode::SignalAndMems)
-    }
-}
-
-impl Default for DataMode {
-    fn default() -> Self {
-        DataMode::SignalAndMems
-    }
-}
-
-impl std::fmt::Display for DataMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DataMode::SignalOnly => write!(f, "Только сигнал"),
-            DataMode::MemsOnly => write!(f, "Только MEMS"),
-            DataMode::SignalAndMems => write!(f, "Сигнал + MEMS"),
-        }
-    }
+#[derive(Clone, Debug)]
+pub struct DeviceEntry {
+    pub info: SensorInfo,
+    pub name: String,
+    pub address: String,
+    pub rssi: i16,
 }
 
 pub struct Controller {
     runtime: Runtime,
     events_tx: UnboundedSender<ControllerEvent>,
+    command_tx: UnboundedSender<ControllerCommand>,
+    command_rx: Option<UnboundedReceiver<ControllerCommand>>,
     started: bool,
-    mode: DataMode,
 }
 
 impl Controller {
-    pub fn new(mode: DataMode) -> (Self, UnboundedReceiver<ControllerEvent>) {
+    pub fn new() -> (Self, UnboundedReceiver<ControllerEvent>) {
         let runtime = Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("Не удалось создать tokio runtime для GUI");
 
         let (events_tx, events_rx) = unbounded_channel();
+        let (command_tx, command_rx) = unbounded_channel();
 
         (
             Self {
                 runtime,
                 events_tx,
+                command_tx,
+                command_rx: Some(command_rx),
                 started: false,
-                mode,
             },
             events_rx,
         )
@@ -92,146 +71,76 @@ impl Controller {
         self.started = true;
         let events = self.events_tx.clone();
         let handle = self.runtime.handle().clone();
-        let mode = self.mode;
+        let command_rx = self
+            .command_rx
+            .take()
+            .expect("command receiver already taken");
 
-        thread::spawn(
-            move || match handle.block_on(run_callibri(events.clone(), mode)) {
+        thread::spawn(move || {
+            let fut = run_controller(events.clone(), command_rx);
+            match handle.block_on(fut) {
                 Ok(_) => {
                     let _ = events.send(ControllerEvent::Finished);
                 }
                 Err(err) => {
                     let _ = events.send(ControllerEvent::Failed(err));
                 }
-            },
-        );
+            }
+        });
+    }
+
+    pub fn request_rescan(&self) {
+        let _ = self.command_tx.send(ControllerCommand::Rescan);
+    }
+
+    pub fn request_connect(&self, sensor: SensorInfo) {
+        let _ = self
+            .command_tx
+            .send(ControllerCommand::Connect { sensor });
+    }
+
+    pub fn shutdown(&self) {
+        let _ = self.command_tx.send(ControllerCommand::Shutdown);
     }
 }
 
-async fn run_callibri(
+async fn run_controller(
     events: UnboundedSender<ControllerEvent>,
-    mode: DataMode,
+    mut command_rx: UnboundedReceiver<ControllerCommand>,
 ) -> Result<(), String> {
-    log(&events, "Запускаем сканер...");
-
     let filter: [SensorFamily; 1] = [SensorFamily_SensorLECallibri];
     let mut scanner = SampleScanner::new(&filter)?;
+    let mut session: Option<CallibriSensor> = None;
 
-    let mut device_found = false;
-    let user_data: *mut c_void = &mut device_found as *mut _ as *mut c_void;
-    scanner.add_sensors_callback(user_data)?;
-
-    if !device_found {
-        log(&events, "Начинаем поиск устройств (10 сек)...");
-        scanner.start(10)?;
-    }
-
-    let sensors = scanner.fetch_devices(32)?;
-    log(&events, format!("Найдено {} сенсоров", sensors.len()));
-
-    let Some(sensor_info) = sensors.first().copied() else {
-        return Err("Сканер не вернул ни одного сенсора".into());
-    };
-
-    log(&events, "Создаём сенсор...");
-    let sensor_ptr = scanner.create_sensor(sensor_info).await?;
-    let mut session = CallibriSensor::new(sensor_ptr);
-
-    log(&events, "Подключение к сенсору...");
-    session.connect()?;
-
-    log(&events, "Чтение функций/команд/параметров сенсора...");
-    if let Err(err) = describe_sensor_features(session.ptr()) {
-        log(&events, format!("Не удалось получить функции: {err}"));
-    }
-    if let Err(err) = describe_sensor_commands(session.ptr()) {
-        log(&events, format!("Не удалось получить команды: {err}"));
-    }
-    if let Err(err) = describe_sensor_parameters(session.ptr()) {
-        log(&events, format!("Не удалось получить параметры: {err}"));
-    }
-
-    log(&events, "Настраиваем частоту дискретизации 500 Гц...");
-    session.configure_sampling_frequency(SensorSamplingFrequency_FrequencyHz500)?;
-
-    if mode.has_signal() {
-        log(&events, "Запускаем поток сигнала...");
-        session.start_signal_stream().await?;
-
-        log(&events, "Получаем данные 5 секунд...");
-        sleep(Duration::from_secs(5)).await;
-
-        if session.is_signal_running() {
-            log(&events, "Останавливаем поток сигнала...");
-            if let Err(err) = session.stop_signal_stream().await {
-                log(&events, format!("Ошибка остановки сигнала: {err}"));
-            }
-        }
-        session.unsubscribe_signal();
-    } else {
-        log(&events, "Режим передачи сигнала отключён пользователем.");
-    }
-
-    if mode.has_mems() {
-        if session.supports_mems() {
-            log(
-                &events,
-                "Устройство поддерживает MEMS. Проверяем состояние калибровки...",
-            );
-            match session.read_mems_calibration_state() {
-                Ok(true) => log(&events, "MEMS уже откалиброван."),
-                Ok(false) => {
-                    log(&events, "MEMS не откалиброван. Запускаем калибровку...");
-                    if let Err(err) = session.calibrate_mems().await {
-                        log(&events, format!("Ошибка калибровки MEMS: {err}"));
-                    } else {
-                        log(&events, "Команда калибровки MEMS отправлена.");
+    while let Some(command) = command_rx.recv().await {
+        match command {
+            ControllerCommand::Rescan => {
+                if let Some(mut active) = session.take() {
+                    log(&events, "Отключаем текущее соединение перед повторным поиском.");
+                    if active.is_connected() {
+                        let _ = active.disconnect();
                     }
                 }
-                Err(err) => log(
-                    &events,
-                    format!("Не удалось получить состояние MEMS: {err}"),
-                ),
+                perform_scan(&events, &mut scanner).await?;
             }
-
-            if let Err(err) = session.subscribe_mems() {
-                log(&events, format!("Не удалось подписаться на MEMS: {err}"));
-            }
-            if let Err(err) = session.subscribe_quaternion() {
-                log(
-                    &events,
-                    format!("Не удалось подписаться на кватернионы: {err}"),
-                );
-            }
-
-            log(
-                &events,
-                "Запускаем поток MEMS и выводим данные в течение 15 секунд...",
-            );
-            match session.start_mems_stream().await {
-                Ok(_) => {
-                    sleep(Duration::from_secs(15)).await;
-                    if session.is_mems_running() {
-                        if let Err(err) = session.stop_mems_stream().await {
-                            log(&events, format!("Ошибка остановки MEMS: {err}"));
-                        }
+            ControllerCommand::Connect { sensor } => {
+                if let Some(mut active) = session.take() {
+                    log(&events, "Отключаем предыдущее соединение...");
+                    if active.is_connected() {
+                        let _ = active.disconnect();
                     }
                 }
-                Err(err) => log(&events, format!("Не удалось запустить MEMS: {err}")),
+                session = Some(connect_sensor(&events, &mut scanner, sensor).await?);
             }
-
-            session.unsubscribe_mems();
-            session.unsubscribe_quaternion();
-        } else {
-            log(&events, "MEMS не поддерживается данным устройством.");
+            ControllerCommand::Shutdown => {
+                break;
+            }
         }
-    } else {
-        log(&events, "Режим MEMS отключён пользователем.");
     }
 
-    if session.is_connected() {
-        log(&events, "Отключаем сенсор...");
-        if let Err(err) = session.disconnect() {
-            log(&events, format!("Ошибка отключения: {err}"));
+    if let Some(mut active) = session {
+        if active.is_connected() {
+            let _ = active.disconnect();
         }
     }
 
@@ -239,11 +148,81 @@ async fn run_callibri(
         log(&events, format!("Ошибка остановки сканера: {err}"));
     }
     scanner.remove_sensors_callback();
-
     log(&events, "Работа завершена");
     Ok(())
 }
 
 fn log(events: &UnboundedSender<ControllerEvent>, message: impl Into<String>) {
     let _ = events.send(ControllerEvent::Log(message.into()));
+}
+
+impl From<SensorInfo> for DeviceEntry {
+    fn from(info: SensorInfo) -> Self {
+        Self {
+            name: extract_str(&info.Name),
+            address: extract_str(&info.Address),
+            rssi: info.RSSI,
+            info,
+        }
+    }
+}
+
+fn extract_str(buf: &[std::os::raw::c_char]) -> String {
+    let slice = unsafe { CStr::from_ptr(buf.as_ptr()) };
+    slice.to_string_lossy().trim().to_string()
+}
+
+async fn perform_scan(
+    events: &UnboundedSender<ControllerEvent>,
+    scanner: &mut SampleScanner,
+) -> Result<(), String> {
+    log(events, "Запускаем сканирование...");
+    let mut device_found = false;
+    let user_data: *mut c_void = &mut device_found as *mut _ as *mut c_void;
+    scanner.add_sensors_callback(user_data)?;
+
+    if !device_found {
+        log(events, "Начинаем поиск устройств (10 сек)...");
+        scanner.start(10)?;
+    }
+
+    let sensors = scanner.fetch_devices(32)?;
+    log(events, format!("Найдено {} сенсоров", sensors.len()));
+    let entries = sensors.into_iter().map(DeviceEntry::from).collect();
+    let _ = events.send(ControllerEvent::Devices(entries));
+
+    if let Err(err) = scanner.stop() {
+        log(events, format!("Ошибка остановки сканера: {err}"));
+    }
+    scanner.remove_sensors_callback();
+    log(events, "Поиск завершён");
+    Ok(())
+}
+
+async fn connect_sensor(
+    events: &UnboundedSender<ControllerEvent>,
+    scanner: &mut SampleScanner,
+    sensor: SensorInfo,
+) -> Result<CallibriSensor, String> {
+    log(events, format!("Подключение к {}...", extract_str(&sensor.Name)));
+
+    let sensor_ptr = scanner.create_sensor(sensor).await?;
+    let mut session = CallibriSensor::new(sensor_ptr);
+
+    session.connect()?;
+
+    if let Err(err) = describe_sensor_features(session.ptr()) {
+        log(events, format!("Не удалось получить функции: {err}"));
+    }
+    if let Err(err) = describe_sensor_commands(session.ptr()) {
+        log(events, format!("Не удалось получить команды: {err}"));
+    }
+    if let Err(err) = describe_sensor_parameters(session.ptr()) {
+        log(events, format!("Не удалось получить параметры: {err}"));
+    }
+
+    log(events, "Сенсор готов к дальнейшим командам.");
+    let name = extract_str(&sensor.Name);
+    let _ = events.send(ControllerEvent::Connected(name));
+    Ok(session)
 }
