@@ -1,5 +1,5 @@
 use crate::core::bindings::*;
-use crate::core::utils::{empty_status, status_message};
+use crate::core::utils::{empty_status, extract_str, status_message};
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use std::slice::from_raw_parts;
@@ -49,7 +49,27 @@ unsafe extern "C" fn sensors_callback(
         let slice = from_raw_parts(sensors, sz_sensors as usize);
 
         for sensor in slice {
-            println!("Sensor: {:?}", sensor);
+            println!(
+                "\nНайдено устройство:\n\
+                - Device Family: {}\n\
+                - Model: {}\n\
+                - Name: {}\n\
+                - Address: {}\n\
+                - Serial Number: {}\n\
+                - Pairing Required: {}\n\
+                - RSSI: {}\n",
+                sensor.SensFamily,
+                sensor.SensModel,
+                extract_str(&sensor.Name).trim_end_matches('\0'),
+                extract_str(&sensor.Address).trim_end_matches('\0'),
+                extract_str(&sensor.SerialNumber).trim_end_matches('\0'),
+                if sensor.PairingRequired != 0 {
+                    "Yes"
+                } else {
+                    "No"
+                },
+                sensor.RSSI
+            );
         }
     }
 }
@@ -204,7 +224,7 @@ impl SampleScanner {
         }
 
         if sensors_vec.is_empty() {
-            Err("Сканер не вернул ни одного устройства".into())
+            Err("Устройства не найдены".into())
         } else {
             Ok(sensors_vec)
         }

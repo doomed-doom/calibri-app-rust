@@ -1,15 +1,23 @@
-#![allow(dead_code)]
-
 use crate::core::bindings::*;
 use crate::core::commands::exec_sensor_command;
 use crate::core::utils::{empty_status, status_message};
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use std::slice;
+use std::sync::{Arc, Mutex};
 
-#[derive(Default)]
 pub struct CallibriSignalListener {
     handle: CallibriSignalDataListenerHandle,
+    buffer: Arc<Mutex<Vec<_CallibriSignalData>>>,
+}
+
+impl Default for CallibriSignalListener {
+    fn default() -> Self {
+        Self {
+            handle: null_mut(),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
 }
 
 impl CallibriSignalListener {
@@ -19,12 +27,13 @@ impl CallibriSignalListener {
         }
 
         let mut status = empty_status();
+        let storage_ptr = Arc::as_ptr(&self.buffer) as *mut c_void;
         let ok = unsafe {
             addSignalCallbackCallibri(
                 sensor_ptr,
                 Some(signal_callback),
                 &mut self.handle,
-                null_mut(),
+                storage_ptr,
                 &mut status,
             )
         } != 0;
@@ -55,6 +64,14 @@ impl CallibriSignalListener {
         exec_sensor_command(sensor_ptr, SensorCommand_CommandStopSignal).await
     }
 
+    pub fn take_packets(&self) -> Vec<_CallibriSignalData> {
+        let mut guard = self
+            .buffer
+            .lock()
+            .expect("Хранилище Signal-пакетов запаниковало");
+        guard.drain(..).collect()
+    }
+
     pub fn is_subscribed(&self) -> bool {
         !self.handle.is_null()
     }
@@ -70,7 +87,7 @@ unsafe extern "C" fn signal_callback(
     _sensor: *mut Sensor,
     data: *mut CallibriSignalData,
     sz_data: i32,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) {
     if data.is_null() || sz_data <= 0 {
         println!("Callibri signal callback: пустой пакет");
@@ -79,6 +96,12 @@ unsafe extern "C" fn signal_callback(
 
     unsafe {
         let packets = slice::from_raw_parts(data, sz_data as usize);
+        let storage_ptr = user_data as *const Mutex<Vec<_CallibriSignalData>>;
+        if let Some(storage) = storage_ptr.as_ref() {
+            if let Ok(mut buffer) = storage.lock() {
+                buffer.extend(packets.iter().copied());
+            }
+        }
         for packet in packets {
             if packet.Samples.is_null() || packet.SzSamples == 0 {
                 println!("Получен пакет без данных");
@@ -86,7 +109,12 @@ unsafe extern "C" fn signal_callback(
             }
 
             let samples = slice::from_raw_parts(packet.Samples, packet.SzSamples as usize);
-            println!("{} отсчётов (В): {:?}", samples.len(), samples);
+            // println!(
+            //     "Signal packet #{}, {} отсчётов (В): {:?}",
+            //     packet.PackNum,
+            //     samples.len(),
+            //     samples
+            // );
         }
     }
 }

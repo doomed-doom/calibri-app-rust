@@ -32,9 +32,9 @@ fn from_env() -> Option<Theme> {
         }
     }
 
-    env::var("PREFER_DARK_THEME")
-        .ok()
-        .and_then(|value| parse_bool(&value).map(|is_dark| if is_dark { Theme::Dark } else { Theme::Light }))
+    env::var("PREFER_DARK_THEME").ok().and_then(|value| {
+        parse_bool(&value).map(|is_dark| if is_dark { Theme::Dark } else { Theme::Light })
+    })
 }
 
 fn from_gtk_settings(folder: &str) -> Option<Theme> {

@@ -1,15 +1,23 @@
-#![allow(dead_code)]
-
 use crate::core::bindings::*;
 use crate::core::commands::exec_sensor_command;
 use crate::core::utils::{empty_status, status_message};
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use std::slice;
+use std::sync::{Arc, Mutex};
 
-#[derive(Default)]
 pub struct CallibriMEMSListener {
     handle: MEMSDataListenerHandle,
+    buffer: Arc<Mutex<Vec<_MEMSData>>>,
+}
+
+impl Default for CallibriMEMSListener {
+    fn default() -> Self {
+        Self {
+            handle: null_mut(),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
 }
 
 impl CallibriMEMSListener {
@@ -19,12 +27,13 @@ impl CallibriMEMSListener {
         }
 
         let mut status = empty_status();
+        let storage_ptr = Arc::as_ptr(&self.buffer) as *mut c_void;
         let ok = unsafe {
             addMEMSDataCallback(
                 sensor_ptr,
                 Some(mems_callback),
                 &mut self.handle,
-                null_mut(),
+                storage_ptr,
                 &mut status,
             )
         } != 0;
@@ -54,6 +63,14 @@ impl CallibriMEMSListener {
     pub async fn stop(&self, sensor_ptr: *mut Sensor) -> Result<(), String> {
         exec_sensor_command(sensor_ptr, SensorCommand_CommandStopMEMS).await
     }
+
+    pub fn take_packets(&self) -> Vec<_MEMSData> {
+        let mut guard = self
+            .buffer
+            .lock()
+            .expect("Хранилище MEMS-пакетов запаниковало");
+        guard.drain(..).collect()
+    }
 }
 
 impl Drop for CallibriMEMSListener {
@@ -62,9 +79,18 @@ impl Drop for CallibriMEMSListener {
     }
 }
 
-#[derive(Default)]
 pub struct CallibriQuaternionListener {
     handle: QuaternionDataListenerHandle,
+    buffer: Arc<Mutex<Vec<_QuaternionData>>>,
+}
+
+impl Default for CallibriQuaternionListener {
+    fn default() -> Self {
+        Self {
+            handle: null_mut(),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
 }
 
 impl CallibriQuaternionListener {
@@ -74,12 +100,13 @@ impl CallibriQuaternionListener {
         }
 
         let mut status = empty_status();
+        let storage_ptr = Arc::as_ptr(&self.buffer) as *mut c_void;
         let ok = unsafe {
             addQuaternionDataCallback(
                 sensor_ptr,
                 Some(quaternion_callback),
                 &mut self.handle,
-                null_mut(),
+                storage_ptr,
                 &mut status,
             )
         } != 0;
@@ -101,6 +128,14 @@ impl CallibriQuaternionListener {
             self.handle = null_mut();
         }
     }
+
+    pub fn take_packets(&self) -> Vec<_QuaternionData> {
+        let mut guard = self
+            .buffer
+            .lock()
+            .expect("Хранилище quaternion-пакетов запаниковало");
+        guard.drain(..).collect()
+    }
 }
 
 impl Drop for CallibriQuaternionListener {
@@ -113,7 +148,7 @@ unsafe extern "C" fn mems_callback(
     _sensor: *mut Sensor,
     data: *mut MEMSData,
     sz_data: i32,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) {
     if data.is_null() || sz_data <= 0 {
         println!("MEMS callback: пустой пакет");
@@ -122,6 +157,12 @@ unsafe extern "C" fn mems_callback(
 
     unsafe {
         let packets = slice::from_raw_parts(data, sz_data as usize);
+        let storage_ptr = user_data as *const Mutex<Vec<_MEMSData>>;
+        if let Some(storage) = storage_ptr.as_ref() {
+            if let Ok(mut buffer) = storage.lock() {
+                buffer.extend(packets.iter().copied());
+            }
+        }
         for packet in packets {
             println!(
                 "MEMS пакет #{}: ACC[x:{:.3}, y:{:.3}, z:{:.3}] GYRO[x:{:.3}, y:{:.3}, z:{:.3}]",
@@ -141,7 +182,7 @@ unsafe extern "C" fn quaternion_callback(
     _sensor: *mut Sensor,
     data: *mut QuaternionData,
     sz_data: i32,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) {
     if data.is_null() || sz_data <= 0 {
         println!("Quaternion callback: пустой пакет");
@@ -150,6 +191,12 @@ unsafe extern "C" fn quaternion_callback(
 
     unsafe {
         let packets = slice::from_raw_parts(data, sz_data as usize);
+        let storage_ptr = user_data as *const Mutex<Vec<_QuaternionData>>;
+        if let Some(storage) = storage_ptr.as_ref() {
+            if let Ok(mut buffer) = storage.lock() {
+                buffer.extend(packets.iter().copied());
+            }
+        }
         for packet in packets {
             println!(
                 "Quaternion пакет #{}: [w:{:.3}, x:{:.3}, y:{:.3}, z:{:.3}]",

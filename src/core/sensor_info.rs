@@ -255,6 +255,7 @@ const PARAM_ACCESS_NAMES: &[(SensorParamAccess, &str)] = &[
     (SensorParamAccess_ParamAccessWrite, "только запись"),
 ];
 
+#[allow(dead_code)]
 pub fn describe_sensor_features(sensor_ptr: *mut Sensor) -> Result<(), String> {
     let features = collect_sensor_features(sensor_ptr)?;
 
@@ -263,13 +264,14 @@ pub fn describe_sensor_features(sensor_ptr: *mut Sensor) -> Result<(), String> {
     } else {
         println!("Доступные функции сенсора:");
         for feature in features {
-            println!("  - {} (код {})", sensor_feature_name(feature), feature);
+            println!("  - {}", sensor_feature_name(feature));
         }
     }
 
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn describe_sensor_commands(sensor_ptr: *mut Sensor) -> Result<(), String> {
     let commands = collect_sensor_commands(sensor_ptr)?;
 
@@ -285,6 +287,7 @@ pub fn describe_sensor_commands(sensor_ptr: *mut Sensor) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn describe_sensor_parameters(sensor_ptr: *mut Sensor) -> Result<(), String> {
     let parameters = collect_sensor_parameters(sensor_ptr)?;
 
@@ -306,6 +309,48 @@ pub fn describe_sensor_parameters(sensor_ptr: *mut Sensor) -> Result<(), String>
     }
 
     Ok(())
+}
+
+pub fn gather_sensor_details(sensor_ptr: *mut Sensor) -> Result<SensorDetails, String> {
+    let features = collect_sensor_features(sensor_ptr)?
+        .into_iter()
+        .map(|feature| sensor_feature_name(feature).to_string())
+        .collect();
+
+    let commands = collect_sensor_commands(sensor_ptr)?
+        .into_iter()
+        .map(|command| CommandDetail {
+            code: command as i32,
+            name: sensor_command_name(command).to_string(),
+        })
+        .collect();
+
+    let mut parameters = Vec::new();
+    for param in collect_sensor_parameters(sensor_ptr)? {
+        let name = sensor_parameter_name(param.Param).to_string();
+        let access = sensor_param_access_name(param.ParamAccess).to_string();
+        let description = match parameter_value_description(sensor_ptr, param.Param) {
+            Ok(desc) => desc,
+            Err(err) => ParameterValueDescription {
+                lines: vec![format!("Не удалось прочитать значение: {err}")],
+                bullets: Vec::new(),
+            },
+        };
+
+        parameters.push(ParameterDetail {
+            code: param.Param as i32,
+            name,
+            access,
+            lines: description.lines,
+            bullets: description.bullets,
+        });
+    }
+
+    Ok(SensorDetails {
+        features,
+        commands,
+        parameters,
+    })
 }
 
 fn collect_sensor_features(sensor_ptr: *mut Sensor) -> Result<Vec<SensorFeature>, String> {
@@ -443,52 +488,69 @@ fn sensor_param_access_name(access: SensorParamAccess) -> &'static str {
 }
 
 #[allow(non_upper_case_globals)]
-fn print_parameter_value(
+fn parameter_value_description(
     sensor_ptr: *mut Sensor,
     parameter: SensorParameter,
-) -> Result<(), String> {
+) -> Result<ParameterValueDescription, String> {
+    let mut desc = ParameterValueDescription::default();
     match parameter {
         SensorParameter_ParameterName => {
             let name = read_sensor_string(sensor_ptr, SENSOR_NAME_CAP, readNameSensor)?;
-            println!("    Имя устройства: {name}");
+            desc.lines.push(format!("Имя устройства: {name}"));
         }
         SensorParameter_ParameterState => {
             let state = read_sensor_state(sensor_ptr)?;
-            println!("    Состояние: {}", sensor_state_name(state));
+            desc.lines
+                .push(format!("Состояние: {}", sensor_state_name(state)));
         }
         SensorParameter_ParameterAddress => {
             let addr = read_sensor_string(sensor_ptr, SENSOR_ADDRESS_CAP, readAddressSensor)?;
-            println!("    Адрес: {addr}");
+            desc.lines.push(format!("Адрес: {addr}"));
         }
         SensorParameter_ParameterSerialNumber => {
             let serial = read_sensor_string(sensor_ptr, SENSOR_SERIAL_CAP, readSerialNumberSensor)?;
-            println!("    Серийный номер: {serial}");
+            desc.lines.push(format!("Серийный номер: {serial}"));
         }
         SensorParameter_ParameterFirmwareMode => {
             let mode = read_firmware_mode(sensor_ptr)?;
-            println!("    Режим прошивки: {}", firmware_mode_name(mode));
+            desc.lines
+                .push(format!("Режим прошивки: {}", firmware_mode_name(mode)));
         }
         SensorParameter_ParameterHardwareFilterState => {
             let filters = read_hardware_filters(sensor_ptr)?;
             if filters.is_empty() {
-                println!("    Аппаратные фильтры: отключены");
+                desc.lines.push("Аппаратные фильтры: отключены".into());
             } else {
-                println!("    Аппаратные фильтры:");
-                for f in filters {
-                    println!("      • {}", sensor_filter_name(f));
-                }
+                desc.lines.push("Аппаратные фильтры:".into());
+                desc.bullets
+                    .extend(filters.into_iter().map(|f| sensor_filter_name(f).to_string()));
             }
         }
         SensorParameter_ParameterSamplingFrequency => {
             let freq = read_sampling_frequency(sensor_ptr)?;
-            println!(
-                "    Частота дискретизации: {}",
+            desc.lines.push(format!(
+                "Частота дискретизации: {}",
                 sampling_frequency_name(freq)
-            );
+            ));
         }
         _ => {}
     }
 
+    Ok(desc)
+}
+
+#[allow(dead_code)]
+fn print_parameter_value(
+    sensor_ptr: *mut Sensor,
+    parameter: SensorParameter,
+) -> Result<(), String> {
+    let description = parameter_value_description(sensor_ptr, parameter)?;
+    for line in description.lines {
+        println!("    {line}");
+    }
+    for bullet in description.bullets {
+        println!("      • {bullet}");
+    }
     Ok(())
 }
 
@@ -647,4 +709,32 @@ fn sampling_frequency_name(freq: SensorSamplingFrequency) -> &'static str {
         SensorSamplingFrequency_FrequencyHz64000 => "64000 Гц",
         _ => "Неизвестная частота",
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SensorDetails {
+    pub features: Vec<String>,
+    pub commands: Vec<CommandDetail>,
+    pub parameters: Vec<ParameterDetail>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommandDetail {
+    pub code: i32,
+    pub name: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParameterDetail {
+    pub code: i32,
+    pub name: String,
+    pub access: String,
+    pub lines: Vec<String>,
+    pub bullets: Vec<String>,
+}
+
+#[derive(Default)]
+struct ParameterValueDescription {
+    lines: Vec<String>,
+    bullets: Vec<String>,
 }

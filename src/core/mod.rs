@@ -1,6 +1,7 @@
 pub mod bindings;
 pub mod callibri;
 pub mod commands;
+pub mod cursor;
 pub mod mems;
 pub mod scanner;
 pub mod sensor_info;

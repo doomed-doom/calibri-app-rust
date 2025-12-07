@@ -13,6 +13,7 @@ pub struct CallibriSensor {
     quaternion_listener: CallibriQuaternionListener,
     signal_running: bool,
     mems_running: bool,
+    quaternion_running: bool,
     connected: bool,
 }
 
@@ -25,6 +26,7 @@ impl CallibriSensor {
             quaternion_listener: CallibriQuaternionListener::default(),
             signal_running: false,
             mems_running: false,
+            quaternion_running: false,
             connected: false,
         }
     }
@@ -158,6 +160,18 @@ impl CallibriSensor {
         self.quaternion_listener.unsubscribe();
     }
 
+    pub fn drain_signal_packets(&self) -> Vec<_CallibriSignalData> {
+        self.signal_listener.take_packets()
+    }
+
+    pub fn drain_mems_packets(&self) -> Vec<_MEMSData> {
+        self.mems_listener.take_packets()
+    }
+
+    pub fn drain_quaternion_packets(&self) -> Vec<_QuaternionData> {
+        self.quaternion_listener.take_packets()
+    }
+
     pub fn read_mems_calibration_state(&self) -> Result<bool, String> {
         unsafe {
             let mut state: u8 = 0;
@@ -198,6 +212,32 @@ impl CallibriSensor {
         self.mems_running = false;
         Ok(())
     }
+
+    pub async fn start_quaternion_stream(&mut self) -> Result<(), String> {
+        if self.quaternion_running {
+            return Ok(());
+        }
+
+        self.quaternion_listener.subscribe(self.sensor)?;
+        exec_sensor_command(self.sensor, SensorCommand_CommandStartAngle).await?;
+        self.quaternion_running = true;
+        Ok(())
+    }
+
+    pub async fn stop_quaternion_stream(&mut self) -> Result<(), String> {
+        if !self.quaternion_running {
+            return Ok(());
+        }
+
+        exec_sensor_command(self.sensor, SensorCommand_CommandStopAngle).await?;
+        self.quaternion_listener.unsubscribe();
+        self.quaternion_running = false;
+        Ok(())
+    }
+
+    pub async fn reset_quaternion_orientation(&self) -> Result<(), String> {
+        exec_sensor_command(self.sensor, SensorCommand_CommandResetQuaternion).await
+    }
 }
 
 impl Drop for CallibriSensor {
@@ -215,6 +255,12 @@ impl Drop for CallibriSensor {
             );
         }
         self.mems_listener.unsubscribe();
+
+        if self.quaternion_running {
+            eprintln!(
+                "Предупреждение: поток кватернионов всё ещё активен при завершении. Попробуйте остановить его явно."
+            );
+        }
         self.quaternion_listener.unsubscribe();
 
         if self.connected {

@@ -1,19 +1,21 @@
 use crate::core::bindings::{SensorFamily, SensorFamily_SensorLECallibri, SensorInfo};
 use crate::core::callibri::CallibriSensor;
+use crate::core::cursor::{drive_cursor_with_gyroscope, CursorControlMode, StrictAxisMode};
 use crate::core::scanner::SampleScanner;
-use crate::core::sensor_info::{
-    describe_sensor_commands, describe_sensor_features, describe_sensor_parameters,
-};
+use crate::core::sensor_info::{SensorDetails, gather_sensor_details};
 use std::ffi::CStr;
 use std::os::raw::c_void;
 use std::thread;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::time::{self, Duration};
 
 pub enum ControllerEvent {
     Log(String),
     Devices(Vec<DeviceEntry>),
     Connected(String),
+    SensorDetails(SensorDetails),
+    CursorModeState(Option<StrictAxisMode>),
     Finished,
     Failed(String),
 }
@@ -22,6 +24,7 @@ pub enum ControllerEvent {
 pub enum ControllerCommand {
     Rescan,
     Connect { sensor: SensorInfo },
+    SetCursorMode { enabled: bool, mode: StrictAxisMode },
     Shutdown,
 }
 
@@ -94,9 +97,13 @@ impl Controller {
     }
 
     pub fn request_connect(&self, sensor: SensorInfo) {
+        let _ = self.command_tx.send(ControllerCommand::Connect { sensor });
+    }
+
+    pub fn request_cursor_mode(&self, enabled: bool, mode: StrictAxisMode) {
         let _ = self
             .command_tx
-            .send(ControllerCommand::Connect { sensor });
+            .send(ControllerCommand::SetCursorMode { enabled, mode });
     }
 
     pub fn shutdown(&self) {
@@ -111,34 +118,133 @@ async fn run_controller(
     let filter: [SensorFamily; 1] = [SensorFamily_SensorLECallibri];
     let mut scanner = SampleScanner::new(&filter)?;
     let mut session: Option<CallibriSensor> = None;
+    let mut cursor_mode: Option<StrictAxisMode> = None;
+    let mut cursor_tick = time::interval(Duration::from_millis(16));
+    cursor_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
-    while let Some(command) = command_rx.recv().await {
-        match command {
-            ControllerCommand::Rescan => {
-                if let Some(mut active) = session.take() {
-                    log(&events, "Отключаем текущее соединение перед повторным поиском.");
-                    if active.is_connected() {
-                        let _ = active.disconnect();
+    loop {
+        tokio::select! {
+            command = command_rx.recv() => {
+                let Some(command) = command else { break };
+                match command {
+                    ControllerCommand::Rescan => {
+                        if cursor_mode.is_some() {
+                            if let Some(sensor) = session.as_mut() {
+                                stop_cursor_mode(sensor, &events).await;
+                            }
+                            cursor_mode = None;
+                            let _ = events.send(ControllerEvent::CursorModeState(None));
+                        }
+                        if let Some(mut active) = session.take() {
+                            log(
+                                &events,
+                                "Отключаем текущее соединение перед повторным поиском.",
+                            );
+                            if active.is_connected() {
+                                let _ = active.disconnect();
+                            }
+                        }
+                        perform_scan(&events, &mut scanner).await?;
+                    }
+                    ControllerCommand::Connect { sensor } => {
+                        if cursor_mode.is_some() {
+                            if let Some(sensor) = session.as_mut() {
+                                stop_cursor_mode(sensor, &events).await;
+                            }
+                            cursor_mode = None;
+                            let _ = events.send(ControllerEvent::CursorModeState(None));
+                        }
+                        if let Some(mut active) = session.take() {
+                            log(&events, "Отключаем предыдущее соединение...");
+                            if active.is_connected() {
+                                let _ = active.disconnect();
+                            }
+                        }
+                        session = Some(connect_sensor(&events, &mut scanner, sensor).await?);
+                    }
+                    ControllerCommand::SetCursorMode { enabled, mode } => {
+                        if enabled {
+                            if cursor_mode == Some(mode) {
+                                continue;
+                            }
+                            match session.as_mut() {
+                                Some(sensor) => {
+                                    if cursor_mode.is_some() {
+                                        stop_cursor_mode(sensor, &events).await;
+                                        cursor_mode = None;
+                                    }
+                                    if !sensor.supports_mems() {
+                                        log(&events, "Сенсор не поддерживает MEMS, режим курсора недоступен.");
+                                        let _ = events.send(ControllerEvent::CursorModeState(None));
+                                        continue;
+                                    }
+                                    if !sensor.is_mems_running() {
+                                        if let Err(err) = sensor.start_mems_stream().await {
+                                            log(&events, format!("Не удалось запустить MEMS: {err}"));
+                                            let _ = events.send(ControllerEvent::CursorModeState(None));
+                                            continue;
+                                        }
+                                    }
+                                    cursor_mode = Some(mode);
+                                    let _ = events.send(ControllerEvent::CursorModeState(cursor_mode));
+                                }
+                                None => {
+                                    log(&events, "Нет активного сенсора для режима курсора.");
+                                    let _ = events.send(ControllerEvent::CursorModeState(None));
+                                }
+                            }
+                        } else if cursor_mode.is_some() {
+                            if let Some(sensor) = session.as_mut() {
+                                stop_cursor_mode(sensor, &events).await;
+                            }
+                            cursor_mode = None;
+                            let _ = events.send(ControllerEvent::CursorModeState(None));
+                        }
+                    }
+                    ControllerCommand::Shutdown => {
+                        if cursor_mode.is_some() {
+                            if let Some(sensor) = session.as_mut() {
+                                stop_cursor_mode(sensor, &events).await;
+                            }
+                            cursor_mode = None;
+                            let _ = events.send(ControllerEvent::CursorModeState(None));
+                        }
+                        break;
                     }
                 }
-                perform_scan(&events, &mut scanner).await?;
             }
-            ControllerCommand::Connect { sensor } => {
-                if let Some(mut active) = session.take() {
-                    log(&events, "Отключаем предыдущее соединение...");
-                    if active.is_connected() {
-                        let _ = active.disconnect();
+            _ = cursor_tick.tick(), if cursor_mode.is_some() => {
+                if let Some(sensor) = session.as_mut() {
+                    if !sensor.is_mems_running() {
+                        cursor_mode = None;
+                        let _ = events.send(ControllerEvent::CursorModeState(None));
+                        continue;
                     }
+                    if let Some(mode) = cursor_mode {
+                        if let Err(err) =
+                            drive_cursor_with_gyroscope(&*sensor, Duration::from_millis(16), CursorControlMode::StrictAxis(mode)).await
+                        {
+                            log(&events, format!("Ошибка режима курсора: {err}"));
+                            stop_cursor_mode(sensor, &events).await;
+                            cursor_mode = None;
+                            let _ = events.send(ControllerEvent::CursorModeState(None));
+                        }
+                    } else {
+                        cursor_mode = None;
+                        let _ = events.send(ControllerEvent::CursorModeState(None));
+                    }
+                } else {
+                    cursor_mode = None;
+                    let _ = events.send(ControllerEvent::CursorModeState(None));
                 }
-                session = Some(connect_sensor(&events, &mut scanner, sensor).await?);
-            }
-            ControllerCommand::Shutdown => {
-                break;
             }
         }
     }
 
     if let Some(mut active) = session {
+        if cursor_mode.is_some() {
+            stop_cursor_mode(&mut active, &events).await;
+        }
         if active.is_connected() {
             let _ = active.disconnect();
         }
@@ -204,25 +310,34 @@ async fn connect_sensor(
     scanner: &mut SampleScanner,
     sensor: SensorInfo,
 ) -> Result<CallibriSensor, String> {
-    log(events, format!("Подключение к {}...", extract_str(&sensor.Name)));
+    log(
+        events,
+        format!("Подключение к {}...", extract_str(&sensor.Name)),
+    );
 
     let sensor_ptr = scanner.create_sensor(sensor).await?;
     let mut session = CallibriSensor::new(sensor_ptr);
 
     session.connect()?;
 
-    if let Err(err) = describe_sensor_features(session.ptr()) {
-        log(events, format!("Не удалось получить функции: {err}"));
-    }
-    if let Err(err) = describe_sensor_commands(session.ptr()) {
-        log(events, format!("Не удалось получить команды: {err}"));
-    }
-    if let Err(err) = describe_sensor_parameters(session.ptr()) {
-        log(events, format!("Не удалось получить параметры: {err}"));
-    }
-
     log(events, "Сенсор готов к дальнейшим командам.");
     let name = extract_str(&sensor.Name);
-    let _ = events.send(ControllerEvent::Connected(name));
+    let _ = events.send(ControllerEvent::Connected(name.clone()));
+    match gather_sensor_details(session.ptr()) {
+        Ok(details) => {
+            let _ = events.send(ControllerEvent::SensorDetails(details));
+        }
+        Err(err) => {
+            log(events, format!("Не удалось получить подробности сенсора: {err}"));
+        }
+    }
     Ok(session)
+}
+
+async fn stop_cursor_mode(sensor: &mut CallibriSensor, events: &UnboundedSender<ControllerEvent>) {
+    if sensor.is_mems_running() {
+        if let Err(err) = sensor.stop_mems_stream().await {
+            log(events, format!("Не удалось остановить MEMS: {err}"));
+        }
+    }
 }

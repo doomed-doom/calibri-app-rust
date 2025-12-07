@@ -1,4 +1,5 @@
 pub mod app;
+mod components;
 pub mod controller;
 mod theme;
 

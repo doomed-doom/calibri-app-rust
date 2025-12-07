@@ -16,3 +16,8 @@ pub fn status_message(status: &OpStatus) -> String {
             .into_owned()
     }
 }
+
+pub fn extract_str(buf: &[std::os::raw::c_char]) -> String {
+    let slice = unsafe { CStr::from_ptr(buf.as_ptr()) };
+    slice.to_string_lossy().trim().to_string()
+}
