@@ -1,8 +1,13 @@
-[2025-12-07 13:47:21.600] [sdk_log] [info] removeAllKnowingDevices
-[2025-12-07 13:47:54.433] [sdk_log] [debug] execCommand: [StopSignal]
-[2025-12-07 13:47:54.471] [sdk_log] [debug] execCommand: [StopStimulation]
-[2025-12-07 13:47:54.471] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
-[2025-12-07 13:47:54.471] [sdk_log] [debug] execCommand: [StopEnvelope]
-[2025-12-07 13:47:54.495] [sdk_log] [debug] execCommand: [StopMEMS]
-[2025-12-07 13:47:54.527] [sdk_log] [debug] execCommand: [StopAngle]
-[2025-12-07 13:47:56.728] [sdk_log] [debug] processPacks() is finished its a work
+[2025-12-07 14:14:34.623] [sdk_log] [error] Error while removeAllKnowingDevices
+[2025-12-07 14:14:35.624] [sdk_log] [info] removeAllKnowingDevices
+[2025-12-07 14:21:17.612] [sdk_log] [debug] execCommand: [StartMEMS]
+[2025-12-07 14:21:40.435] [sdk_log] [debug] execCommand: [StopMEMS]
+[2025-12-07 14:21:59.335] [sdk_log] [debug] execCommand: [StartMEMS]
+[2025-12-07 14:24:31.625] [sdk_log] [debug] execCommand: [StopMEMS]
+[2025-12-07 14:25:49.675] [sdk_log] [debug] execCommand: [StopSignal]
+[2025-12-07 14:25:49.706] [sdk_log] [debug] execCommand: [StopStimulation]
+[2025-12-07 14:25:49.706] [sdk_log] [debug] execCommand: [DisableMotionAssistant]
+[2025-12-07 14:25:49.706] [sdk_log] [debug] execCommand: [StopEnvelope]
+[2025-12-07 14:25:49.742] [sdk_log] [debug] execCommand: [StopMEMS]
+[2025-12-07 14:25:49.766] [sdk_log] [debug] execCommand: [StopAngle]
+[2025-12-07 14:25:51.640] [sdk_log] [debug] processPacks() is finished its a work
